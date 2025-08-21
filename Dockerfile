@@ -7,16 +7,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 更新包列表并安装基础工具
 RUN apt-get update && \
     apt-get install -y \
-    curl \
-    wget \
-    git \
-    vim \
-    nano \
-    openssh-server \
-    sudo \
-    ca-certificates \
-    gnupg \
-    lsb-release && \
+        curl \
+        wget \
+        git \
+        vim \
+        nano \
+        openssh-server \
+        sudo \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        # 安装 MySQL 服务器
+        mysql-server \
+        # 安装 Redis 服务器
+        redis-server && \
     # 清理 apt 缓存以减小镜像体积
     rm -rf /var/lib/apt/lists/*
 
@@ -55,6 +59,24 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
+# ========= 配置 MySQL =========
+# 设置 MySQL root 用户的默认密码 (示例为 'mysqlrootpassword'，请在生产中更改)
+# 使用 debconf-set-selections 预先设置密码，避免交互
+RUN echo "mysql-server mysql-server/root_password password mysqlrootpassword" | debconf-set-selections && \
+    echo "mysql-server mysql-server/root_password_again password mysqlrootpassword" | debconf-set-selections
+# 重新配置 mysql-server 以应用密码
+# RUN dpkg-reconfigure -f noninteractive mysql-server
+
+# 允许 MySQL 通过 TCP/IP 连接，并绑定到所有接口 (开发环境)
+RUN sed -i 's/bind-address.*/bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+RUN sed -i 's/mysqlx-bind-address.*/mysqlx-bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+
+# ========= 配置 Redis =========
+# 允许 Redis 绑定到所有接口 (开发环境)
+RUN sed -i 's/bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf
+# (可选) 禁用 Redis 保护模式 (如果 bind 0.0.0.0 则通常需要)
+RUN echo "protected-mode no" >> /etc/redis/redis.conf
+
 # ========= 配置 SSH =========
 # 设置 root 密码 (示例为 'rootpassword'，请在生产中更改)
 RUN echo 'root:rootpassword' | chpasswd
@@ -63,19 +85,28 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
 # (可选) 允许密码认证 (如果使用密钥认证可禁用)
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-# 创建 SSH 目录并生成主机密钥 (如果需要)
+# 创建 SSH 目录
 RUN mkdir -p /var/run/sshd
 
 # 创建工作目录
 WORKDIR /home/coder
 RUN mkdir -p /home/coder && chmod 755 /home/coder
 
-# 暴露 SSH 端口
-EXPOSE 22
+# 暴露端口: SSH, MySQL, Redis
+EXPOSE 22 3306 6379
 
 # ========= 设置默认启动命令 =========
-# 启动 SSH 服务
-CMD ["/usr/sbin/sshd", "-D"]
+# 使用一个启动脚本启动所有服务
+RUN echo '#!/bin/bash\n\
+echo "Starting MySQL..."\n\
+service mysql start\n\
+echo "Starting Redis..."\n\
+redis-server /etc/redis/redis.conf --daemonize yes\n\
+echo "Starting SSH..."\n\
+/usr/sbin/sshd -D\n'\
+> /start.sh && chmod +x /start.sh
+
+CMD ["/start.sh"]
 
 
 
